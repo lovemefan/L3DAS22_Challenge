@@ -101,7 +101,7 @@ class Attention(nn.Module):
     def __init__(self, dim, num_heads, bias):
         super(Attention, self).__init__()
         self.num_heads = num_heads
-        self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
+        self.outerature = nn.Parameter(torch.ones(num_heads, 1, 1))
 
         self.qkv = nn.Conv2d(dim, dim * 3, kernel_size=1, bias=bias)
         self.qkv_dwconv = nn.Conv2d(dim * 3, dim * 3, kernel_size=3, stride=1, padding=1, groups=dim * 3, bias=bias)
@@ -120,7 +120,7 @@ class Attention(nn.Module):
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
 
-        attn = (q @ k.transpose(-2, -1)) * self.temperature
+        attn = (q @ k.transpose(-2, -1)) * self.outerature
         attn = attn.softmax(dim=-1)
 
         out = (attn @ v)
@@ -190,9 +190,11 @@ class Upsample(nn.Module):
 ##---------- Restormer -----------------------
 class Restormer(nn.Module):
     def __init__(self,
-                 inp_channels=3,
-                 out_channels=3,
-                 dim=48,
+                 fft_size=512,
+                 hop_size=128,
+                 inp_channels=4,
+                 out_channels=4,
+                 dim=4,
                  num_blocks=[4, 6, 6, 8],
                  num_refinement_blocks=4,
                  heads=[1, 2, 4, 8],
@@ -203,8 +205,12 @@ class Restormer(nn.Module):
                  ):
 
         super(Restormer, self).__init__()
-
+        self.fft_size = fft_size
+        self.hop_size = hop_size
+        self.win_size = fft_size
+        self.valid_freq = int(self.fft_size / 2)
         self.patch_embed = OverlapPatchEmbed(inp_channels, dim)
+
 
         self.encoder_level1 = nn.Sequential(*[
             TransformerBlock(dim=dim, num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor, bias=bias,
@@ -246,7 +252,7 @@ class Restormer(nn.Module):
         self.refinement = nn.Sequential(*[
             TransformerBlock(dim=int(dim * 2 ** 1), num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor,
                              bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_refinement_blocks)])
-
+        self.linear = nn.Linear(self.valid_freq * 2, self.valid_freq * 2)
         #### For Dual-Pixel Defocus Deblurring Task ####
         self.dual_pixel_task = dual_pixel_task
         if self.dual_pixel_task:
@@ -255,42 +261,100 @@ class Restormer(nn.Module):
 
         self.output = nn.Conv2d(int(dim * 2 ** 1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
 
-    def forward(self, inp_img):
+    def extract_features(self, inputs, device):
+        # shape: [B, C, S]
+        batch_size, channel, samples = inputs.size()
 
-        inp_enc_level1 = self.patch_embed(inp_img)
+        features = []
+        for idx in range(batch_size):
+            # shape: [C, F, T, 2]
+            features_batch = torch.stft(
+                inputs[idx, ...],
+                self.fft_size,
+                self.hop_size,
+                self.win_size,
+                torch.hann_window(self.win_size).to(device),
+                pad_mode='constant',
+                onesided=True,
+                return_complex=False)
+            features.append(features_batch)
+
+        # shape: [B, C, F, T, 2]
+        features = torch.stack(features, 0)
+        features = features[:, :, :self.valid_freq, :, :]
+        real_features = features[..., 0]
+        imag_features = features[..., 1]
+
+        return real_features, imag_features
+
+    def forward(self, inp_img, device):
+        # shape: [B, C, F, T]
+        real_features, imag_features = self.extract_features(inp_img, device)
+        # shape: [B, C, F*2, T]
+        features = torch.cat((real_features, imag_features), 2)
+
+        inp_enc_level1 = self.patch_embed(features)
         out_enc_level1 = self.encoder_level1(inp_enc_level1)
 
-        inp_enc_level2 = self.down1_2(out_enc_level1)
-        out_enc_level2 = self.encoder_level2(inp_enc_level2)
+        out = self.down1_2(out_enc_level1)
+        out_enc_level2 = self.encoder_level2(out)
 
-        inp_enc_level3 = self.down2_3(out_enc_level2)
-        out_enc_level3 = self.encoder_level3(inp_enc_level3)
+        out = self.down2_3(out_enc_level2)
+        out_enc_level3 = self.encoder_level3(out)
 
-        inp_enc_level4 = self.down3_4(out_enc_level3)
-        latent = self.latent(inp_enc_level4)
+        out = self.down3_4(out_enc_level3)
+        out = self.latent(out)
 
-        inp_dec_level3 = self.up4_3(latent)
-        inp_dec_level3 = torch.cat([inp_dec_level3, out_enc_level3], 1)
-        inp_dec_level3 = self.reduce_chan_level3(inp_dec_level3)
-        out_dec_level3 = self.decoder_level3(inp_dec_level3)
+        out = self.up4_3(out)
+        out = torch.cat([out, out_enc_level3], 1)
+        del out_enc_level3
+        out = self.reduce_chan_level3(out)
+        out = self.decoder_level3(out)
 
-        inp_dec_level2 = self.up3_2(out_dec_level3)
-        inp_dec_level2 = torch.cat([inp_dec_level2, out_enc_level2], 1)
-        inp_dec_level2 = self.reduce_chan_level2(inp_dec_level2)
-        out_dec_level2 = self.decoder_level2(inp_dec_level2)
+        out = self.up3_2(out)
+        out = torch.cat([out, out_enc_level2], 1)
+        del out_enc_level2
+        out = self.reduce_chan_level2(out)
+        out = self.decoder_level2(out)
 
-        inp_dec_level1 = self.up2_1(out_dec_level2)
-        inp_dec_level1 = torch.cat([inp_dec_level1, out_enc_level1], 1)
-        out_dec_level1 = self.decoder_level1(inp_dec_level1)
+        out = self.up2_1(out)
+        out = torch.cat([out, out_enc_level1], 1)
+        del out_enc_level1
+        out = self.decoder_level1(out)
 
-        out_dec_level1 = self.refinement(out_dec_level1)
+        out = self.refinement(out)
 
         #### For Dual-Pixel Defocus Deblurring Task ####
         if self.dual_pixel_task:
-            out_dec_level1 = out_dec_level1 + self.skip_conv(inp_enc_level1)
-            out_dec_level1 = self.output(out_dec_level1)
+            out = out + self.skip_conv(inp_enc_level1)
+            out = self.output(out)
         ###########################
         else:
-            out_dec_level1 = self.output(out_dec_level1) + inp_img
+            out = self.output(out) + features
 
-        return out_dec_level1
+        out = out.permute(0, 1, 3, 2)
+        out = self.linear(out)
+        # shape: [B, C, F*2, T]
+        out = out.permute(0, 1, 3, 2)
+
+        real_mask = out[:, :, :self.valid_freq, :]
+        imag_mask = out[:, :, self.valid_freq:, :]
+
+        est_speech_real = torch.mul(real_features, real_mask) - torch.mul(imag_features, imag_mask)
+        est_speech_imag = torch.mul(real_features, imag_mask) + torch.mul(imag_features, real_mask)
+        est_speech_stft = torch.complex(est_speech_real, est_speech_imag)
+
+        # shape: [B, C, F, T]
+        est_speech_stft = torch.sum(est_speech_stft, 1)
+        batch_size, frequency, frame = est_speech_stft.size()
+        est_speech_stft = torch.cat((est_speech_stft, torch.zeros(batch_size, 1, frame).to(device)), 1)
+
+        # shape: [B, S]
+        est_speech = torch.istft(
+            est_speech_stft,
+            self.fft_size,
+            self.hop_size,
+            self.win_size,
+            torch.hann_window(self.win_size).to(device))
+        # shape: [B, 1, S]
+        return torch.unsqueeze(est_speech, 1)

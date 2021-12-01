@@ -293,8 +293,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     #i/o
     parser.add_argument('--task', type=int,
+                        default=1,
                         help='task to be pre-processed')
-    parser.add_argument('--input_path', type=str, default='DATASETS/Task1',
+    parser.add_argument('--input_path', type=str, default='/home/dataset/L3DAS22/',
                         help='directory where the dataset has been downloaded')
     parser.add_argument('--output_path', type=str, default='DATASETS/processed',
                         help='where to save the numpy matrices')

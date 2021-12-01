@@ -1,6 +1,13 @@
+# -*- coding: utf-8 -*-
+# @Time  : 2021/11/30 14:24
+# @Author : lovemefan
+# @Email : lovemefan@outlook.com
+# @File : baseline.py
 import argparse
 import os
-import pickle
+import sys
+
+sys.path.append(os.path.abspath(os.pardir))
 import time
 
 import numpy as np
@@ -10,13 +17,15 @@ import torch.utils.data as utils
 from torch.optim import Adam
 from tqdm import tqdm
 
+from example.dataset import AudioDataset
+from example.utils import load_model, save_model
+from example.models.Restormer import Restormer
 from models.FaSNet import FaSNet_origin, FaSNet_TAC
 from models.MMUB import MIMO_UNet_Beamforming
-from example.model.Restormer import Restormer
-from utility_functions import load_model, save_model
+
 
 '''
-Train our baseline model for the Task1 of the L3DAS22 challenge.
+Train  for the Task1 of the L3DAS22 challenge.
 This script saves the model checkpoint, as well as a dict containing
 the results (loss and history). To evaluate the performance of the trained model
 according to the challenge metrics, please use evaluate_baseline_task1.py.
@@ -58,55 +67,20 @@ def main(args):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
-    #LOAD DATASET
-    print ('\nLoading dataset')
-
-    with open(args.training_predictors_path, 'rb') as f:
-        training_predictors = pickle.load(f)
-
-    training_predictors = np.array(training_predictors)
-    with open(args.training_target_path, 'rb') as f:
-        training_target = pickle.load(f)
-    training_target = np.array(training_target[:2000])
-
-    with open(args.validation_predictors_path, 'rb') as f:
-        validation_predictors = pickle.load(f)
-    validation_predictors = np.array(validation_predictors[:1000])
-
-    with open(args.validation_target_path, 'rb') as f:
-        validation_target = pickle.load(f)
-    validation_target = np.array(validation_target[:1000])
-
-    with open(args.test_predictors_path, 'rb') as f:
-        test_predictors = pickle.load(f)
-    test_predictors = np.array(test_predictors[:1000])
-
-    with open(args.test_target_path, 'rb') as f:
-        test_target = pickle.load(f)
-    test_target = np.array(test_target[:1000])
+    train_dataset = AudioDataset(args, 'L3DAS22_Task1_train100')
+    dev_dataset = AudioDataset(args, 'L3DAS22_Task1_dev')
+    test_dataset = AudioDataset(args, 'L3DAS22_Task2_dev')
 
 
+    print('\nShapes:')
+    print('Training predictors: ', len(train_dataset))
+    print('Validation predictors: ', len(dev_dataset))
+    print('Test predictors: ', len(test_dataset))
 
 
-    print ('\nShapes:')
-    print ('Training predictors: ', training_predictors.shape)
-    print ('Validation predictors: ', validation_predictors.shape)
-    print ('Test predictors: ', test_predictors.shape)
-
-    #convert to tensor
-    training_predictors = torch.tensor(training_predictors).float()
-    validation_predictors = torch.tensor(validation_predictors).float()
-    test_predictors = torch.tensor(test_predictors).float()
-    training_target = torch.tensor(training_target).float()
-    validation_target = torch.tensor(validation_target).float()
-    test_target = torch.tensor(test_target).float()
-    #build dataset from tensors
-    tr_dataset = utils.TensorDataset(training_predictors, training_target)
-    val_dataset = utils.TensorDataset(validation_predictors, validation_target)
-    test_dataset = utils.TensorDataset(test_predictors, test_target)
     #build data loader from dataset
-    tr_data = utils.DataLoader(tr_dataset, args.batch_size, shuffle=True, pin_memory=True)
-    val_data = utils.DataLoader(val_dataset, args.batch_size, shuffle=False, pin_memory=True)
+    tr_data = utils.DataLoader(train_dataset, args.batch_size, shuffle=True, pin_memory=True)
+    val_data = utils.DataLoader(dev_dataset, args.batch_size, shuffle=False, pin_memory=True)
     test_data = utils.DataLoader(test_dataset, args.batch_size, shuffle=False, pin_memory=True)
 
     #LOAD MODEL
@@ -128,11 +102,17 @@ def main(args):
                                       input_channel=args.input_channel)
     elif args.architecture == 'restormer':
         model = Restormer(fft_size=args.fft_size,
-                                      hop_size=args.hop_size,
-                                      inp_channels=args.input_channel)
+                          hop_size=args.hop_size,
+                          inp_channels=args.input_channel)
 
+    print(model)
+
+    total = sum([param.nelement() for param in model.parameters()])
+
+    print("Number of parameter: %.2fM" % (total/1e6))
     if args.use_cuda:
         print("Moving model to gpu")
+
     model = model.to(device)
 
     #compute number of parameters
@@ -171,7 +151,7 @@ def main(args):
         avg_time = 0.
         model.train()
         train_loss = 0.
-        with tqdm(total=len(tr_dataset) // args.batch_size) as pbar:
+        with tqdm(total=len(train_dataset) // args.batch_size) as pbar:
             for example_num, (x, target) in enumerate(tr_data):
                 target = target.to(device)
                 x = x.to(device)
@@ -245,17 +225,14 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     #saving parameters
-    parser.add_argument('--results_path', type=str, default='RESULTS/Task1',
+    parser.add_argument('--results_path', type=str, default='/home/zlf/L3DAS22/result',
                         help='Folder to write results dicts into')
-    parser.add_argument('--checkpoint_dir', type=str, default='RESULTS/Task1',
+    parser.add_argument('--checkpoint_dir', type=str, default='/home/zlf/L3DAS22/checkpoint',
                         help='Folder to write checkpoints into')
-    #dataset parameters
-    parser.add_argument('--training_predictors_path', type=str, default='/home/dataset/L3DAS22/processed/task1_predictors_train.pkl')
-    parser.add_argument('--training_target_path', type=str, default='/home/dataset/L3DAS22/processed/task1_target_train.pkl')
-    parser.add_argument('--validation_predictors_path', type=str, default='/home/dataset/L3DAS22/processed/task1_predictors_validation.pkl')
-    parser.add_argument('--validation_target_path', type=str, default='/home/dataset/L3DAS22/processed/task1_target_validation.pkl')
-    parser.add_argument('--test_predictors_path', type=str, default='/home/dataset/L3DAS22/processed/task1_predictors_test.pkl')
-    parser.add_argument('--test_target_path', type=str, default='/home/dataset/L3DAS22/processed/task1_target_test.pkl')
+    parser.add_argument('--input_dir', default='/home/dataset/L3DAS22', help='the path of L3DAS22 dataset')
+    parser.add_argument('--num_mics', default=1)
+    parser.add_argument('--sample_rate', default=16000)
+
     #training parameters
     parser.add_argument('--gpu_id', type=int, default=0)
     parser.add_argument('--use_cuda', type=str, default='True')
@@ -264,7 +241,7 @@ if __name__ == '__main__':
     parser.add_argument('--load_model', type=str, default=None,
                         help='Reload a previously trained model (whole task model)')
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=6,
+    parser.add_argument('--batch_size', type=int, default=2,
                         help="Batch size")
     parser.add_argument('--sr', type=int, default=16000,
                         help="Sampling rate")
@@ -272,8 +249,10 @@ if __name__ == '__main__':
                         help="Patience for early stopping on validation set")
     parser.add_argument('--loss', type=str, default="L1",
                         help="L1 or L2")
-    #model parameters
-    parser.add_argument('--architecture', type=str, default='MIMO_UNet_Beamforming',
+    # #model parameters
+    # parser.add_argument('--architecture', type=str, default='MIMO_UNet_Beamforming',
+    #                     help="model name")
+    parser.add_argument('--architecture', type=str, default='restormer',
                         help="model name")
     parser.add_argument('--enc_dim', type=int, default=64)
     parser.add_argument('--feature_dim', type=int, default=64)
