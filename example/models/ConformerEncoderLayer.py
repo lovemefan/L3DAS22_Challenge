@@ -114,7 +114,7 @@ class Attention(nn.Module):
         self.to_out = nn.Linear(inner_dim, dim)
 
         self.max_pos_emb = max_pos_emb
-        self.rel_pos_emb = nn.Embedding(2 * max_pos_emb + 1, dim_head)
+        self.rel_pos_emb = nn.Embedding(2 * max_pos_emb + 1, dim_head * heads)
 
         self.dropout = nn.Dropout(dropout)
 
@@ -221,7 +221,7 @@ class ConformerBlock(nn.Module):
     def __init__(
         self,
         *,
-        t_dim,
+        dim,
         dim_head=64,
         num_heads=8,
         ff_mult=4,
@@ -232,16 +232,16 @@ class ConformerBlock(nn.Module):
         conv_dropout=0.,
     ):
         super().__init__()
-        self.ff1 = FeedForward(dim=t_dim, mult = ff_mult, dropout = ff_dropout)
-        self.attn = Attention(dim=t_dim, dim_head = dim_head, heads = num_heads, dropout = attn_dropout)
-        self.conv = ConformerConvModule(dim=t_dim, causal = False, expansion_factor = conv_expansion_factor, kernel_size = conv_kernel_size, dropout = conv_dropout)
-        self.ff2 = FeedForward(dim=t_dim, mult = ff_mult, dropout = ff_dropout)
+        self.ff1 = FeedForward(dim=dim, mult = ff_mult, dropout = ff_dropout)
+        self.attn = Attention(dim=dim, dim_head=dim_head, heads = num_heads, dropout = attn_dropout)
+        self.conv = ConformerConvModule(dim=dim, causal = False, expansion_factor = conv_expansion_factor, kernel_size = conv_kernel_size, dropout = conv_dropout)
+        self.ff2 = FeedForward(dim=dim, mult = ff_mult, dropout = ff_dropout)
 
-        self.attn = PreNorm(t_dim, self.attn)
-        self.ff1 = Scale(0.5, PreNorm(t_dim, self.ff1))
-        self.ff2 = Scale(0.5, PreNorm(t_dim, self.ff2))
+        self.attn = PreNorm(dim, self.attn)
+        self.ff1 = Scale(0.5, PreNorm(dim, self.ff1))
+        self.ff2 = Scale(0.5, PreNorm(dim, self.ff2))
 
-        self.post_norm = nn.LayerNorm(t_dim)
+        self.post_norm = nn.LayerNorm(dim)
 
 
     def forward(self, x, mask = None):

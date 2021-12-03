@@ -142,6 +142,7 @@ class ConformerBlockWithGDFN(nn.Module):
                  bias,
                  LayerNorm_type,
                  t_dim,
+                 dim_head=64,
                  conv_expansion_factor=2,
                  conv_kernel_size=4,
                  attn_dropout=0.,
@@ -152,7 +153,8 @@ class ConformerBlockWithGDFN(nn.Module):
         super(ConformerBlockWithGDFN, self).__init__()
 
         self.conformer_block = ConformerBlock(
-            t_dim=t_dim,
+            dim=t_dim,
+            dim_head=dim_head,
             num_heads=num_heads,
             ff_mult=ffn_expansion_factor,
             conv_expansion_factor=conv_expansion_factor,
@@ -219,7 +221,7 @@ class Crestormer(nn.Module):
                  inp_channels=4,
                  out_channels=4,
                  dim=4,
-                 num_blocks=[4, 6, 6, 8],
+                 num_blocks=[1, 1, 1, 1],
                  num_refinement_blocks=4,
                  heads=[1, 2, 4, 8],
                  ffn_expansion_factor=2.66,
@@ -236,44 +238,44 @@ class Crestormer(nn.Module):
         self.patch_embed = OverlapPatchEmbed(inp_channels, dim)
 
         self.encoder_level1 = nn.Sequential(*[
-            ConformerBlockWithGDFN(dim=dim, num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor, bias=bias,
+            ConformerBlockWithGDFN(dim=dim, num_heads=heads[0], t_dim=600, dim_head=64, ffn_expansion_factor=ffn_expansion_factor, bias=bias,
                              LayerNorm_type=LayerNorm_type) for i in range(num_blocks[0])])
 
         self.down1_2 = Downsample(dim)  ## From Level 1 to Level 2
         self.encoder_level2 = nn.Sequential(*[
-            ConformerBlockWithGDFN(dim=int(dim * 2 ** 1), num_heads=heads[1], ffn_expansion_factor=ffn_expansion_factor,
+            ConformerBlockWithGDFN(dim=int(dim * 2 ** 1), t_dim=300, dim_head=128, num_heads=heads[1], ffn_expansion_factor=ffn_expansion_factor,
                              bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[1])])
 
         self.down2_3 = Downsample(int(dim * 2 ** 1))  ## From Level 2 to Level 3
         self.encoder_level3 = nn.Sequential(*[
-            ConformerBlockWithGDFN(dim=int(dim * 2 ** 2), num_heads=heads[2], ffn_expansion_factor=ffn_expansion_factor,
+            ConformerBlockWithGDFN(dim=int(dim * 2 ** 2), t_dim=150, dim_head=256, num_heads=heads[2], ffn_expansion_factor=ffn_expansion_factor,
                              bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[2])])
 
         self.down3_4 = Downsample(int(dim * 2 ** 2))  ## From Level 3 to Level 4
         self.latent = nn.Sequential(*[
-            ConformerBlockWithGDFN(dim=int(dim * 2 ** 3), num_heads=heads[3], ffn_expansion_factor=ffn_expansion_factor,
+            ConformerBlockWithGDFN(dim=int(dim * 2 ** 3), t_dim=75, dim_head=512, num_heads=heads[3], ffn_expansion_factor=ffn_expansion_factor,
                              bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[3])])
 
         self.up4_3 = Upsample(int(dim * 2 ** 3))  ## From Level 4 to Level 3
         self.reduce_chan_level3 = nn.Conv2d(int(dim * 2 ** 3), int(dim * 2 ** 2), kernel_size=1, bias=bias)
         self.decoder_level3 = nn.Sequential(*[
-            ConformerBlockWithGDFN(dim=int(dim * 2 ** 2), num_heads=heads[2], ffn_expansion_factor=ffn_expansion_factor,
+            ConformerBlockWithGDFN(dim=int(dim * 2 ** 2), t_dim=150, dim_head=256, num_heads=heads[2], ffn_expansion_factor=ffn_expansion_factor,
                              bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[2])])
 
         self.up3_2 = Upsample(int(dim * 2 ** 2))  ## From Level 3 to Level 2
         self.reduce_chan_level2 = nn.Conv2d(int(dim * 2 ** 2), int(dim * 2 ** 1), kernel_size=1, bias=bias)
         self.decoder_level2 = nn.Sequential(*[
-            ConformerBlockWithGDFN(dim=int(dim * 2 ** 1), num_heads=heads[1], ffn_expansion_factor=ffn_expansion_factor,
+            ConformerBlockWithGDFN(dim=int(dim * 2 ** 1), t_dim=300, dim_head=128, num_heads=heads[1], ffn_expansion_factor=ffn_expansion_factor,
                              bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[1])])
 
         self.up2_1 = Upsample(int(dim * 2 ** 1))  ## From Level 2 to Level 1  (NO 1x1 conv to reduce channels)
 
         self.decoder_level1 = nn.Sequential(*[
-            ConformerBlockWithGDFN(dim=int(dim * 2 ** 1), num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor,
+            ConformerBlockWithGDFN(dim=int(dim * 2 ** 1), t_dim=600, dim_head=64, num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor,
                              bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_blocks[0])])
 
         self.refinement = nn.Sequential(*[
-            ConformerBlockWithGDFN(dim=int(dim * 2 ** 1), num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor,
+            ConformerBlockWithGDFN(dim=int(dim * 2 ** 1), t_dim=600, dim_head=64, num_heads=heads[0], ffn_expansion_factor=ffn_expansion_factor,
                              bias=bias, LayerNorm_type=LayerNorm_type) for i in range(num_refinement_blocks)])
         self.linear = nn.Linear(self.valid_freq * 2, self.valid_freq * 2)
         #### For Dual-Pixel Defocus Deblurring Task ####
